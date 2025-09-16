@@ -98,14 +98,8 @@ jobs:
           EOF
 
           # Quan trọng: -Xclang -load để đăng ký cl::opt trước khi parse -mllvm
-          "$CXX" --target=aarch64-linux-android31 -O1 -fPIC \
-            -Xclang -load -Xclang "$PLUGIN" \
+          "$CXX" --target=aarch64-linux-android31 -O0 -fPIC \
             -fpass-plugin="$PLUGIN" \
-            -mllvm -mmbcf_prob=100 -mllvm -mmbcf_loop=3 -mllvm -mmbcf_cond_compl=5 \
-            -mllvm -mmsplit_num=7 \
-            -mllvm -mmfw_prob=100  -mllvm -mmfw_times=4 -mllvm -mmfw_randstrsource=1 \
-            -mllvm -mmmba-prob=60  -mllvm -mmmba-times=2 -mllvm -mmlinear-mba-terms=10 \
-            -mllvm -mmonlystr=1 \
             -c test_max.cpp -o test_max.o
 
           "$CXX" --target=aarch64-linux-android31 test_max.o -shared -o libtest_max.so
