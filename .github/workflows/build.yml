@@ -1,0 +1,163 @@
+name: try-ndk-with-prebuilt-ssagepass
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+permissions: { contents: read }
+
+env:
+  SSAGE_SO_URL: https://github.com/vxd303/sager/releases/download/a/libSsageObfuscator.so
+  SSAGE_SO_SHA256: ""  # nếu muốn verify
+
+jobs:
+  ndk-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout (this repo)
+        uses: actions/checkout@v4
+
+      - name: Base deps (curl, unzip, 7z, libc++)
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl unzip p7zip-full
+          sudo apt-get install -y libc++-14-dev libc++abi-14-dev || true
+      - name: Download prebuilt libSsageObfuscator.so (upstream)
+        id: fetch_so
+        run: |
+          set -euxo pipefail
+          mkdir -p plugin
+          curl -L "$SSAGE_SO_URL" -o plugin/libSsageObfuscator.so
+          test -s plugin/libSsageObfuscator.so
+          if [ -n "$SSAGE_SO_SHA256" ]; then
+            echo "$SSAGE_SO_SHA256  plugin/libSsageObfuscator.so" | sha256sum -c -
+          fi
+          chmod a+r plugin/libSsageObfuscator.so
+          echo "plugin=$(pwd)/plugin/libSsageObfuscator.so" >> "$GITHUB_OUTPUT"
+          ls -l plugin
+      # --- PIN NDK r25c; nếu action lỗi 404, fallback tải tay ---
+      - name: Setup NDK r25c (preferred)
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+          add-to-path: true
+        continue-on-error: true
+
+      - name: Fallback:download NDK r25c from official link
+        if: steps.setup-ndk.outcome != 'success'
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/ndk"
+          cd "$HOME/ndk"
+          curl -L -o android-ndk-r25c-linux.zip \
+            https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
+          unzip -q android-ndk-r25c-linux.zip
+          echo "ANDROID_NDK_HOME=$HOME/ndk/android-ndk-r25c" >> $GITHUB_ENV
+          echo "NDK=$HOME/ndk/android-ndk-r25c" >> $GITHUB_ENV
+          echo "$HOME/ndk/android-ndk-r25c/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+      - name: Verify NDK clang (expect LLVM 14.x)
+        run: |
+          set -euxo pipefail
+          if [ -n "${{ steps.setup-ndk.outputs.ndk-path }}" ]; then
+            NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
+          else
+            NDK="${NDK:-$ANDROID_NDK_HOME}"
+          fi
+          "${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++" --version
+      # ---------- MAX (ổn định): bỏ indibr/indcall/vm, giữ fla/split/strenc/bcf/mba/funcwrap ----------
+      - name: NDK compile test – MAX (NEW PM only, -O0)
+        id: test_max
+        run: |
+          set -euxo pipefail
+          PLUGIN="${{ steps.fetch_so.outputs.plugin }}"
+          if [ -n "${{ steps.setup-ndk.outputs.ndk-path }}" ]; then
+            NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
+          else
+            NDK="${NDK:-$ANDROID_NDK_HOME}"
+          fi
+          CXX="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++"
+          cat > test_max.cpp <<'EOF'
+          #include <cstdio>
+          __attribute__((noinline))
+          __attribute((__annotate__(("fla enfla split strenc bcf mba funcwrap vmf indibr"))))
+          static void ultra(){ std::puts("NDK MAX obf (stable)"); }
+          __attribute__((noinline))
+          __attribute((__annotate__(("fla enfla split strenc bcf mba funcwrap vmf indibr"))))
+          static void ultra2(){ std::puts("NDK MAX obf 2 (stable)"); }
+          int main(){ ultra(); ultra2(); return 0; }
+          EOF
+          # NEW PM only, -O0 để IR "hiền" hơn với Flattening
+          "$CXX" --target=aarch64-linux-android31 -O0 -fPIC \
+            -fpass-plugin="$PLUGIN" \
+            -c test_max.cpp -o test_max.o
+          "$CXX" --target=aarch64-linux-android31 test_max.o -shared -o libtest_max.so
+          file libtest_max.so || true
+      # ---------- Fallback: loại hẳn Flattening nếu MAX vẫn crash ----------
+      - name: NDK compile test – MAX-no-fla (NEW PM only, -O0)
+        if: steps.test_max.outcome != 'success'
+        run: |
+          set -euxo pipefail
+          PLUGIN="${{ steps.fetch_so.outputs.plugin }}"
+          if [ -n "${{ steps.setup-ndk.outputs.ndk-path }}" ]; then
+            NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
+          else
+            NDK="${NDK:-$ANDROID_NDK_HOME}"
+          fi
+          CXX="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++"
+          cat > test_max_nofla.cpp <<'EOF'
+          #include <cstdio>
+          __attribute__((noinline))
+          __attribute((__annotate__(("split strenc bcf mba funcwrap vmf"))))
+          static void ultra(){ std::puts("NDK MAX no-fla"); }
+          __attribute__((noinline))
+          __attribute((__annotate__(("split strenc bcf mba funcwrap vmf"))))
+          static void ultra2(){ std::puts("NDK MAX no-fla 2"); }
+          int main(){ ultra(); ultra2(); return 0; }
+          EOF
+          "$CXX" --target=aarch64-linux-android31 -O0 -fPIC \
+            -fpass-plugin="$PLUGIN" \
+            -c test_max_nofla.cpp -o test_max_nofla.o
+          "$CXX" --target=aarch64-linux-android31 test_max_nofla.o -shared -o libtest_max_nofla.so
+          file libtest_max_nofla.so || true
+      # (Tuỳ chọn) Thử nạp kép + -mllvm để "đẩy kịch trần" — không làm fail CI
+      - name: Optional:double-load with -mllvm (ignore errors)
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          PLUGIN="${{ steps.fetch_so.outputs.plugin }}"
+          if [ -n "${{ steps.setup-ndk.outputs.ndk-path }}" ]; then
+            NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
+          else
+            NDK="${NDK:-$ANDROID_NDK_HOME}"
+          fi
+          CXX="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++"
+          SRC="test_max.cpp"
+          if [ ! -f "$SRC" ]; then SRC="test_max_nofla.cpp"; fi
+          # Lưu ý: tên option -mllvm phụ thuộc plugin; nếu không có sẽ bị ignored/errored (không fail job).
+          "$CXX" --target=aarch64-linux-android31 -O0 -fPIC \
+            -fpass-plugin="$PLUGIN" \
+            -Xclang -load -Xclang "$PLUGIN" \
+            -mllvm -split_num=7 \
+            -mllvm -bcf_prob=100 -mllvm -bcf_loop=3 -mllvm -bcf_cond_compl=5 \
+            -mllvm -fw_prob=100 -mllvm -fw_times=4 \
+            -c "$SRC" -o test_max_tuned.o || true
+          "$CXX" --target=aarch64-linux-android31 test_max_tuned.o -shared -o libtest_max_tuned.so || true
+          file libtest_max_tuned.so || true
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ndk-prebuilt-test-strong-stable
+          path: |
+            plugin/libSsageObfuscator.so
+            test_max.cpp
+            test_max.o
+            libtest_max.so
+            test_max_nofla.cpp
+            test_max_nofla.o
+            libtest_max_nofla.so
+            test_max_tuned.o
+            libtest_max_tuned.so
