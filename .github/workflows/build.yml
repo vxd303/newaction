@@ -74,7 +74,7 @@ jobs:
         id: test_max
         run: |
           set -euxo pipefail
-          PLUGIN="${{ steps.find_plugin.outputs.plugin }}"
+          PLUGIN="${{ steps.fetch_so.outputs.plugin }}"
           if [ -n "${{ steps.setup-ndk.outputs.ndk-path }}" ]; then
             NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
           else
@@ -116,7 +116,7 @@ jobs:
         if: steps.test_max.outcome != 'success'
         run: |
           set -euxo pipefail
-          PLUGIN="${{ steps.find_plugin.outputs.plugin }}"
+          PLUGIN="${{ steps.fetch_so.outputs.plugin }}"
           if [ -n "${{ steps.setup-ndk.outputs.ndk-path }}" ]; then
             NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
           else
@@ -155,7 +155,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euxo pipefail
-          PLUGIN="${{ steps.find_plugin.outputs.plugin }}"
+          PLUGIN="${{ steps.fetch_so.outputs.plugin }}"
           if [ -n "${{ steps.setup-ndk.outputs.ndk-path }}" ]; then
             NDK="${{ steps.setup-ndk.outputs.ndk-path }}"
           else
